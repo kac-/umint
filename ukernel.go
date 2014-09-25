@@ -22,7 +22,30 @@ func doubleSha256(b []byte) []byte {
 	return hasher.Sum(nil)
 }
 
-func compactToBig(compact uint32) *big.Int {
+// CompactToBig converts a compact representation of a whole number N to an
+// unsigned 32-bit number.  The representation is similar to IEEE754 floating
+// point numbers.
+//
+// Like IEEE754 floating point, there are three basic components: the sign,
+// the exponent, and the mantissa.  They are broken out as follows:
+//
+//	* the most significant 8 bits represent the unsigned base 256 exponent
+// 	* bit 23 (the 24th bit) represents the sign bit
+//	* the least significant 23 bits represent the mantissa
+//
+//	-------------------------------------------------
+//	|   Exponent     |    Sign    |    Mantissa     |
+//	-------------------------------------------------
+//	| 8 bits [31-24] | 1 bit [23] | 23 bits [22-00] |
+//	-------------------------------------------------
+//
+// The formula to calculate N is:
+// 	N = (-1^sign) * mantissa * 256^(exponent-3)
+//
+// This compact form is only used in bitcoin to encode unsigned 256-bit numbers
+// which represent difficulty targets, thus there really is not a need for a
+// sign bit, but it is implemented here to stay consistent with bitcoind.
+func CompactToBig(compact uint32) *big.Int {
 	// Extract the mantissa, sign bit, and exponent.
 	mantissa := compact & 0x007fffff
 	isNegative := compact&0x00800000 != 0
@@ -78,7 +101,7 @@ func CheckStakeKernelHash(t *StakeKernelTemplate) (hashProofOfStake []byte, succ
 		return
 	}
 
-	bnTargetPerCoinDay := compactToBig(t.Bits)
+	bnTargetPerCoinDay := CompactToBig(t.Bits)
 	var timeReduction int64
 	if t.IsProtocolV03 {
 		timeReduction = t.StakeMinAge
@@ -98,8 +121,8 @@ func CheckStakeKernelHash(t *StakeKernelTemplate) (hashProofOfStake []byte, succ
 		bnCoinDayWeight = new(big.Int).SetInt64(valueTime / coinDay)
 	} else {
 		// overflow, calc w/ big.Int or return error?
-		err = errors.New("valueTime overflow")
-		return
+		// err = errors.New("valueTime overflow")
+		// return
 		bnCoinDayWeight = new(big.Int).Div(new(big.Int).
 			Div(
 			new(big.Int).Mul(big.NewInt(t.PrevTxOutValue), big.NewInt(nTimeWeight)),
@@ -108,7 +131,7 @@ func CheckStakeKernelHash(t *StakeKernelTemplate) (hashProofOfStake []byte, succ
 	}
 	targetInt := new(big.Int).Mul(bnCoinDayWeight, bnTargetPerCoinDay)
 
-	buf := [28]byte{}
+	buf := make([]byte, 28)
 	o := 0
 
 	if t.IsProtocolV03 { // v0.3 protocol
@@ -136,12 +159,14 @@ func CheckStakeKernelHash(t *StakeKernelTemplate) (hashProofOfStake []byte, succ
 		}
 	}
 	hashProofOfStake = doubleSha256(buf[:o])
-	hashProofOfStakeInt := new(big.Int).SetBytes(hashProofOfStake)
-
+	buf = hashProofOfStake
+	for i, l := 0, len(buf); i < l/2; i++ {
+		buf[i], buf[l-1-i] = buf[l-1-i], buf[i]
+	}
+	hashProofOfStakeInt := new(big.Int).SetBytes(buf)
 	if hashProofOfStakeInt.Cmp(targetInt) > 0 {
 		return
 	}
-
 	success = true
 	return
 }
