@@ -88,7 +88,7 @@ type StakeKernelTemplate struct {
 	TxTime        int64
 }
 
-func CheckStakeKernelHash(t *StakeKernelTemplate) (hashProofOfStake []byte, success bool, err error) {
+func CheckStakeKernelHash(t *StakeKernelTemplate) (hashProofOfStake []byte, success bool, err error, minTarget *big.Int) {
 	success = false
 
 	if t.TxTime < t.PrevTxTime { // Transaction timestamp violation
@@ -167,6 +167,7 @@ func CheckStakeKernelHash(t *StakeKernelTemplate) (hashProofOfStake []byte, succ
 	if hashProofOfStakeInt.Cmp(targetInt) > 0 {
 		return
 	}
+	minTarget = new(big.Int).Sub(new(big.Int).Div(hashProofOfStakeInt, bnCoinDayWeight), big.NewInt(1))
 	success = true
 	return
 }

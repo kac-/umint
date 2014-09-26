@@ -37,7 +37,7 @@ func TestCheckFunction(t *testing.T) {
 		t.Errorf("unmarshalling: %v", err)
 		return
 	}
-	hash, success, err := umint.CheckStakeKernelHash(&tpl)
+	hash, success, err, minTarget := umint.CheckStakeKernelHash(&tpl)
 	if err != nil {
 		t.Errorf("checking good template: %v", err)
 		return
@@ -51,9 +51,17 @@ func TestCheckFunction(t *testing.T) {
 		return
 	}
 
+	// check if template satisfies min target
+	tpl.Bits = umint.IncCompact(umint.BigToCompact(minTarget))
+	_, success, _, _ = umint.CheckStakeKernelHash(&tpl)
+	if !success {
+		t.Errorf("wrong check result on retarget, have %v want %v", success, true)
+		return
+	}
+
 	//  modify and test failure
 	tpl.StakeModifier++
-	hash, success, err = umint.CheckStakeKernelHash(&tpl)
+	hash, success, err, _ = umint.CheckStakeKernelHash(&tpl)
 	if err != nil {
 		t.Errorf("checking good template: %v", err)
 		return
