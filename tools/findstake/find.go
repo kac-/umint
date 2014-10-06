@@ -50,6 +50,7 @@ func main() {
 	)
 
 	configSeelog()
+	defer log.Flush()
 
 	url := "https://s3.amazonaws.com/kac-pub/cryptos/peercoin/unspent-135k.tar.gz"
 
@@ -260,6 +261,8 @@ func DownloadDB(url string) (dbTempDir string, topHeight uint32, topTime time.Ti
 					err = fmt.Errorf("copy tar data to file(%v): %v", fn, err)
 					return
 				}
+				// TODO(kac-) hotfix for windows 'Sharing violation' on db opening
+				file.Close()
 			}
 			th, err = tr.Next()
 		}
