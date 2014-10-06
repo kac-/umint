@@ -197,7 +197,7 @@ func DownloadDB(url string) (dbTempDir string, topHeight uint32, topTime time.Ti
 	dbTempDir = prefix + "db"
 
 	defer os.Remove(downloadTo)
-	{ // download
+	func() { // download, wrap to close files w/ defer
 		var resp *http.Response
 
 		log.Infof("downloading %v to %v", url, downloadTo)
@@ -220,36 +220,37 @@ func DownloadDB(url string) (dbTempDir string, topHeight uint32, topTime time.Ti
 			err = fmt.Errorf("copy data from %v to %v: %v", url, downloadTo, err)
 			return
 		}
-	}
-	{ // unpack
-		var (
-			th *tar.Header
-			gr *gzip.Reader
-		)
-		log.Infof("unpacking %v to %v", downloadTo, dbTempDir)
+	}()
 
-		err = os.MkdirAll(dbTempDir, 0777)
-		if err != nil {
-			err = fmt.Errorf("create temp db dir(%v): %v", dbTempDir, err)
-			return
-		}
-		file, err = os.Open(downloadTo)
-		if err != nil {
-			err = fmt.Errorf("open db archive(%v): %v", downloadTo, err)
-			return
-		}
-		defer file.Close()
-		gr, err = gzip.NewReader(file)
-		if err != nil {
-			err = fmt.Errorf("open gzip reader(%v): %v", downloadTo, err)
-			return
-		}
-		tr := tar.NewReader(gr)
-		for th, err = tr.Next(); err == nil; {
-			fi := th.FileInfo()
-			if !fi.IsDir() { // there are only files
+	// unpack
+	var (
+		th *tar.Header
+		gr *gzip.Reader
+	)
+	log.Infof("unpacking %v to %v", downloadTo, dbTempDir)
+
+	err = os.MkdirAll(dbTempDir, 0777)
+	if err != nil {
+		err = fmt.Errorf("create temp db dir(%v): %v", dbTempDir, err)
+		return
+	}
+	file, err = os.Open(downloadTo)
+	if err != nil {
+		err = fmt.Errorf("open db archive(%v): %v", downloadTo, err)
+		return
+	}
+	defer file.Close()
+	gr, err = gzip.NewReader(file)
+	if err != nil {
+		err = fmt.Errorf("open gzip reader(%v): %v", downloadTo, err)
+		return
+	}
+	tr := tar.NewReader(gr)
+	for th, err = tr.Next(); err == nil; {
+		fi := th.FileInfo()
+		if !fi.IsDir() { // there are only files
+			func() { // wrap to close files w/ defer
 				fn := filepath.Join(dbTempDir, fi.Name())
-				//fmt.Printf("file: %v\n", fn)
 				file, err = os.Create(fn)
 				if err != nil {
 					err = fmt.Errorf("create archived file(%v): %v", fn, err)
@@ -261,19 +262,17 @@ func DownloadDB(url string) (dbTempDir string, topHeight uint32, topTime time.Ti
 					err = fmt.Errorf("copy tar data to file(%v): %v", fn, err)
 					return
 				}
-				// TODO(kac-) hotfix for windows 'Sharing violation' on db opening
-				file.Close()
-			}
-			th, err = tr.Next()
+			}()
 		}
-		if err != io.EOF {
-			err = fmt.Errorf("archive error(%v): %v", downloadTo, err)
-			return
-		}
+		th, err = tr.Next()
 	}
-	{ // test db
-		topHeight, topTime, err = utxo.FetchHeightFile(dbTempDir)
+	if err != io.EOF {
+		err = fmt.Errorf("archive error(%v): %v", downloadTo, err)
+		return
 	}
+
+	// test db
+	topHeight, topTime, err = utxo.FetchHeightFile(dbTempDir)
 
 	return
 }
