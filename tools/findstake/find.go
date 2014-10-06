@@ -1,13 +1,20 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"flag"
 	"fmt"
-	"github.com/mably/btcchain"
-	"github.com/mably/btcdb"
+	log "github.com/cihub/seelog"
+	"github.com/conformal/goleveldb/leveldb"
+	"github.com/kac-/umint/utxo"
 	"github.com/mably/btcnet"
+	"github.com/mably/btcutil"
 	"github.com/mably/btcwire"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,64 +29,105 @@ var (
 	startString string
 )
 
-const (
-	nProtocolV03SwitchTime     int64 = 1363800000
-	nProtocolV03TestSwitchTime int64 = 1359781000
-)
-
 func init() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage of %s: DB_PATH TX:IDX\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage of %s: [ADDR|TX:IDX]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
-	flag.BoolVar(&testnet, "testnet", false, "use testnet params")
-	flag.Float64Var(&diff, "diff", -0.8, "display success on diff [default: use 80% of current diff]")
+	flag.Float64Var(&diff, "diff", 10.0, "display success on diff ")
 	flag.UintVar(&days, "days", 7, "number of days to check")
-	flag.StringVar(&startString, "from", "now", "date from which scan [f.e. 2014-09-12]")
+	flag.StringVar(&startString, "from", "now", "date from which scan [i.e. 2014-09-12]")
 	flag.Parse()
 }
 
 func main() {
-	var dbPath string
+	var (
+		err            error
+		params         = &btcnet.MainNetParams
+		addrOrOutPoint string
+		addr           *btcutil.AddressPubKeyHash
+		outPoint       *btcwire.OutPoint
+	)
+
+	configSeelog()
+
+	url := "https://s3.amazonaws.com/kac-pub/cryptos/peercoin/unspent-135k.tar.gz"
+
+	appHome := btcutil.AppDataDir("ppc-umint", false)
+	if err := os.MkdirAll(appHome, 0777); err != nil {
+		log.Errorf("create app home(%v): %v\n", appHome, err)
+		return
+	}
+	dbDestinationDir := filepath.Join(appHome, "unspent_db")
+	topHeight, topTime, err := utxo.FetchHeightFile(dbDestinationDir)
+	if err != nil || topHeight != 135000 {
+		var dbTempDir string
+		dbTempDir, topHeight, topTime, err = DownloadDB(url)
+		defer os.RemoveAll(dbTempDir)
+		if err != nil {
+			log.Errorf("downloading database failed: %v\n", err)
+			return
+		}
+		err = os.RemoveAll(dbDestinationDir)
+		if err != nil {
+			log.Errorf("remove database dir(%v): %v\n", dbDestinationDir, err)
+			return
+		}
+		err = os.Rename(dbTempDir, dbDestinationDir)
+		if err != nil {
+			if strings.HasSuffix(err.Error(), ": invalid cross-device link") {
+				// destination is on different partition, we need to copy directory
+				err = CopyFile(dbTempDir, dbDestinationDir)
+				if err != nil {
+					log.Errorf("copying db from %v to %v failed: %v", dbTempDir, dbDestinationDir, err)
+					// cleanup
+					os.RemoveAll(dbDestinationDir)
+					return
+				}
+			} else {
+				log.Errorf("rename/move %v to %v: %v\n", dbTempDir, dbDestinationDir, err)
+				return
+			}
+		}
+	}
+	log.Infof("got db: %v blocks (%v)", topHeight, topTime.Format("2006-01-02 15:04:05"))
+
 	// db path
 	if len(flag.Args()) < 1 {
-		fmt.Println("DB_PATH not specified")
+		fmt.Println("arg required")
 		flag.Usage()
 		return
 	}
-	dbPath = flag.Arg(0)
-	dirInfo, err := os.Stat(dbPath)
-	if err != nil {
-		fmt.Printf("%s: %v\n", dbPath, err)
-		return
+	addrOrOutPoint = flag.Arg(0)
+	if len(addrOrOutPoint) > 64 { //TXID:IDX
+		sa := strings.Split(addrOrOutPoint, ":")
+		if len(sa) != 2 {
+			fmt.Printf("invalid format of TX:IDX    - %s\n", addrOrOutPoint)
+			return
+		}
+		txSha, err := btcwire.NewShaHashFromStr(sa[0])
+		if len(sa[0]) < 64 || err != nil {
+			fmt.Printf("invalid TX    - %s\n", sa[0])
+			return
+		}
+		outputIdx, err := strconv.Atoi(sa[1])
+		if err != nil {
+			fmt.Printf("invalid IDX    - %s\n", sa[1])
+			return
+		}
+		outPoint = btcwire.NewOutPoint(txSha, uint32(outputIdx))
+	} else { // ADDR
+		decoded, err := btcutil.DecodeAddress(addrOrOutPoint, params)
+		if err != nil {
+			fmt.Printf("invalid address(%v): %v\n", addrOrOutPoint, err)
+			return
+		}
+		var ok bool
+		addr, ok = decoded.(*btcutil.AddressPubKeyHash)
+		if !ok {
+			fmt.Printf("pub key hash address expected: %v\n", addrOrOutPoint)
+		}
 	}
-	if !dirInfo.IsDir() {
-		fmt.Printf("directory expected: %s\n", dbPath)
-		return
-	}
-	// tx:idx
-	if len(flag.Args()) < 2 {
-		fmt.Println("TX:IDX not specified")
-		flag.Usage()
-		return
-	}
-	tmp := flag.Arg(1)
-	sa := strings.Split(tmp, ":")
-	if len(sa) != 2 {
-		fmt.Printf("invalid format of TX:IDX    - %s\n", tmp)
-		return
-	}
-	txSha, err := btcwire.NewShaHashFromStr(sa[0])
-	if len(sa[0]) < 64 || err != nil {
-		fmt.Printf("invalid TX    - %s\n", sa[0])
-		return
-	}
-	outputIdx, err := strconv.Atoi(sa[1])
-	if err != nil {
-		fmt.Printf("invalid IDX    - %s\n", sa[1])
-		return
-	}
-	outPoint := btcwire.NewOutPoint(txSha, uint32(outputIdx))
 
 	// -from
 	start := time.Now()
@@ -93,36 +141,181 @@ func main() {
 	end := start.Add(time.Hour * time.Duration(24*days))
 
 	// done, now fire
-	fmt.Printf(
-		`db:     %v
+	if outPoint != nil {
+		log.Infof(`params:
 tx:      %v
 idx:     %v
-testnet: %v
 start:   %v
 end:     %v
-`, dbPath, txSha, outputIdx, testnet, start, end)
-	var params *btcnet.Params
-	if testnet {
-		params = &btcnet.TestNet3Params
+diff:    %v
+`, outPoint.Hash, outPoint.Index, start, end, diff)
 	} else {
-		params = &btcnet.MainNetParams
+		log.Infof(`params:
+addr:    %v
+start:   %v
+end:     %v
+diff:    %v
+`, addr.EncodeAddress(), start, end, diff)
 	}
-	db, err := btcdb.OpenDB("leveldb", dbPath)
+
+	db, err := leveldb.OpenFile(dbDestinationDir, nil)
 	if err != nil {
 		fmt.Printf("opening db: %v\n", err)
 		return
 	}
-	_, bestChainHeight, _ := db.NewestSha()
-	fmt.Printf("height:  %v\n", bestChainHeight)
-	c := btcchain.New(db, params, nil)
-	err = c.GenerateInitialIndex()
-	if err != nil {
-		fmt.Printf("generate initial idx: %v\n", err)
+	if addr != nil {
+		ups, _, err := utxo.FetchCoins(db, addr)
+		if err != nil {
+			log.Criticalf("fetching coins for %v: %v", addr.EncodeAddress(), err)
+			return
+		}
+		for i := range ups {
+			err = findStake(ups[i], db, params, start.Unix(), end.Unix(), float32(diff))
+			if err != nil {
+				log.Errorf("error while searching: %v", err)
+			}
+		}
+	} else {
+		err = findStake(outPoint, db, params, start.Unix(), end.Unix(), float32(diff))
+		if err != nil {
+			log.Errorf("error while searching: %v", err)
+		}
+	}
+	_ = addr
+}
+
+func DownloadDB(url string) (dbTempDir string, topHeight uint32, topTime time.Time, err error) {
+	var file *os.File
+	prefix := filepath.Join(os.TempDir(), fmt.Sprintf("db-download-%v-", time.Now().Unix()))
+	filename := url[strings.LastIndex(url, "/")+1:]
+	if !strings.HasSuffix(filename, "tar.gz") {
+		err = fmt.Errorf("insupported db archive: %v", filename)
 		return
 	}
+	downloadTo := prefix + filename
+	dbTempDir = prefix + "db"
 
-	err = findStake(outPoint, db, c, params, start.Unix(), end.Unix(), float32(diff))
-	if err != nil {
-		fmt.Printf("error while searching: %v\n", err)
+	defer os.Remove(downloadTo)
+	{ // download
+		var resp *http.Response
+
+		log.Infof("downloading %v to %v", url, downloadTo)
+		file, err = os.Create(downloadTo)
+		if err != nil {
+			err = fmt.Errorf("create download destination file(%v): %v", downloadTo, err)
+			return
+		}
+		defer file.Close()
+
+		resp, err = http.Get(url)
+		if err != nil {
+			err = fmt.Errorf("db archive http request(%v): %v", url, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		_, err = io.Copy(file, resp.Body)
+		if err != nil {
+			err = fmt.Errorf("copy data from %v to %v: %v", url, downloadTo, err)
+			return
+		}
 	}
+	{ // unpack
+		var (
+			th *tar.Header
+			gr *gzip.Reader
+		)
+		log.Infof("unpacking %v to %v", downloadTo, dbTempDir)
+
+		err = os.MkdirAll(dbTempDir, 0777)
+		if err != nil {
+			err = fmt.Errorf("create temp db dir(%v): %v", dbTempDir, err)
+			return
+		}
+		file, err = os.Open(downloadTo)
+		if err != nil {
+			err = fmt.Errorf("open db archive(%v): %v", downloadTo, err)
+			return
+		}
+		defer file.Close()
+		gr, err = gzip.NewReader(file)
+		if err != nil {
+			err = fmt.Errorf("open gzip reader(%v): %v", downloadTo, err)
+			return
+		}
+		tr := tar.NewReader(gr)
+		for th, err = tr.Next(); err == nil; {
+			fi := th.FileInfo()
+			if !fi.IsDir() { // there are only files
+				fn := filepath.Join(dbTempDir, fi.Name())
+				//fmt.Printf("file: %v\n", fn)
+				file, err = os.Create(fn)
+				if err != nil {
+					err = fmt.Errorf("create archived file(%v): %v", fn, err)
+					return
+				}
+				defer file.Close()
+				_, err = io.Copy(file, tr)
+				if err != nil {
+					err = fmt.Errorf("copy tar data to file(%v): %v", fn, err)
+					return
+				}
+			}
+			th, err = tr.Next()
+		}
+		if err != io.EOF {
+			err = fmt.Errorf("archive error(%v): %v", downloadTo, err)
+			return
+		}
+	}
+	{ // test db
+		topHeight, topTime, err = utxo.FetchHeightFile(dbTempDir)
+	}
+
+	return
+}
+
+func CopyFile(src string, dst string) error {
+	srcLen := len(src)
+	err := filepath.Walk(src, func(path string, f os.FileInfo, err error) error {
+		dpath := dst + path[srcLen:]
+		//fmt.Printf("%s (%v) -> %v\n", path, f.Name(), dpath)
+		if f.IsDir() {
+			err = os.MkdirAll(dpath, 0777)
+			if err != nil {
+				return fmt.Errorf("mkdir(%v): %v", dpath, err)
+			}
+		} else {
+			in, err := os.Open(path)
+			if err != nil {
+				return fmt.Errorf("open file(%v): %v", path, err)
+			}
+			defer in.Close()
+			out, err := os.Create(dpath)
+			if err != nil {
+				return fmt.Errorf("create file(%v): %v", dpath, err)
+			}
+			defer out.Close()
+			_, err = io.Copy(out, in)
+			if err != nil {
+				return fmt.Errorf("copy content from %v to %v: %v", path, dpath, err)
+			}
+		}
+		return nil
+	})
+	return err
+}
+
+func configSeelog() {
+	l, _ := log.LoggerFromConfigAsString(`
+<seelog>
+	<outputs formatid="main">
+		<console />
+	</outputs>
+	<formats>
+		<format id="main" format="[%Level] %Msg%n"/>
+	</formats>
+</seelog>
+`)
+	log.ReplaceLogger(l)
 }
