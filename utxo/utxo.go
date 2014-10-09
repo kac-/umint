@@ -71,6 +71,32 @@ func SerializeUTXO(utxo *UTXO) []byte {
 	return buf
 }
 
+func FetchOutPoints(db *leveldb.DB, addr *btcutil.AddressPubKeyHash, count, skip uint) (outPoints []*btcwire.OutPoint, complete bool, err error) {
+	key := make([]byte, 1+20)
+	key[0] = DB_ADDR
+	copy(key[1:], addr.ScriptAddress())
+	iter := db.NewIterator(nil, nil)
+	position := uint(0)
+	for ok := iter.Seek(key); ok; ok, position = iter.Next(), position+1 {
+		if !bytes.Equal(iter.Key()[:1+20], key) {
+			complete = true
+			break
+		}
+		if position >= skip {
+			outPoints = append(outPoints, DeserializeOutPoint(iter.Value()))
+			if count > 0 && uint(len(outPoints)) == count {
+				break
+			}
+		}
+	}
+	iter.Release()
+	err = iter.Error()
+	if err != nil {
+		err = fmt.Errorf("iterator error: %v", err)
+	}
+	return
+}
+
 func FetchCoins(db *leveldb.DB, addr *btcutil.AddressPubKeyHash) ([]*btcwire.OutPoint, []*UTXO, error) {
 	var err error
 	key := make([]byte, 1+20)

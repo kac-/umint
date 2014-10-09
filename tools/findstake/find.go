@@ -127,6 +127,7 @@ func main() {
 		addr, ok = decoded.(*btcutil.AddressPubKeyHash)
 		if !ok {
 			fmt.Printf("pub key hash address expected: %v\n", addrOrOutPoint)
+			return
 		}
 	}
 
