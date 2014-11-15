@@ -52,7 +52,7 @@ func main() {
 	configSeelog()
 	defer log.Flush()
 
-	url := "https://s3.amazonaws.com/kac-pub/cryptos/peercoin/unspent-135k.tar.gz"
+	url := "http://kac-pub.s3.amazonaws.com/post/cryptos/peercoin//unspent-141k.tar.gz"
 
 	appHome := btcutil.AppDataDir("ppc-umint", false)
 	if err := os.MkdirAll(appHome, 0777); err != nil {
@@ -61,7 +61,7 @@ func main() {
 	}
 	dbDestinationDir := filepath.Join(appHome, "unspent_db")
 	topHeight, topTime, err := utxo.FetchHeightFile(dbDestinationDir)
-	if err != nil || topHeight != 135000 {
+	if err != nil || topHeight != 142000 {
 		var dbTempDir string
 		dbTempDir, topHeight, topTime, err = DownloadDB(url)
 		defer os.RemoveAll(dbTempDir)
