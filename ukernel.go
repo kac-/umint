@@ -2,7 +2,7 @@ package umint
 
 import (
 	"errors"
-	"github.com/conformal/fastsha256"
+	"github.com/btcsuite/fastsha256"
 	"math/big"
 )
 

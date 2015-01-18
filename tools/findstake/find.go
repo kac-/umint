@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	log "github.com/cihub/seelog"
-	"github.com/conformal/goleveldb/leveldb"
+	"github.com/btcsuite/goleveldb/leveldb"
 	"github.com/kac-/umint/utxo"
 	"github.com/mably/btcnet"
 	"github.com/mably/btcutil"

@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	log "github.com/cihub/seelog"
-	"github.com/conformal/goleveldb/leveldb"
+	"github.com/btcsuite/goleveldb/leveldb"
 	"github.com/kac-/umint"
 	"github.com/kac-/umint/utxo"
 	"github.com/mably/btcnet"

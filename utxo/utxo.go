@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/conformal/goleveldb/leveldb"
+	"github.com/btcsuite/goleveldb/leveldb"
 	"github.com/mably/btcutil"
 	"github.com/mably/btcwire"
 	"time"
